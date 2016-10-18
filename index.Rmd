@@ -1,0 +1,180 @@
+---
+title: "Practical Machine Learning Final Project"
+author: "Shekhar nagendra"
+date: "Oct 17, 2016"
+output: html_document
+---
+
+### Introduction
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+
+In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+The five ways are:
+
+* exactly according to the specification (Class A), 
+* throwing the elbows to the front (Class B), 
+* lifting the dumbbell only halfway (Class C), 
+* lowering the dumbbell only halfway (Class D) and 
+* throwing the hips to the front (Class E). 
+
+Only Class A corresponds to correct performance. 
+
+The goal of this project is to predict the manner in which they did the exercise, i.e., Class A to E. 
+
+More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### Load Libraries
+
+```{r load_libraries, warning=FALSE,message=FALSE}
+library(knitr)
+library(caret)
+library(rattle)
+library(rpart)
+library(rpart.plot)
+library(kernlab)
+```
+
+### Read the Data
+
+```{r read_data}
+
+# Read the data and remove NA and DIV/0
+
+training_df0 = read.csv("pml-training.csv",header = TRUE, sep = ",",na.strings = c("NA", "#DIV/0!"))
+
+
+testing_df0 = read.csv("pml-testing.csv",header = TRUE, sep = ",",na.strings = c("NA", "#DIV/0!"))
+
+dim(training_df0)
+```
+
+### Clean the Data
+Looking at the data, many columns have NA. We will remove all those useless columns.
+Also, columns 1 through 7 have general timestamp and other information irrelevent to our analysis
+So we will remove columns 1-7 as well
+
+```{r clean_data}
+training_df1 <- training_df0[, colSums(is.na(training_df0)) == 0]
+
+# remove column1 1-7
+training_df1 <- training_df1[,-c(1:7)]
+
+testing_df1 <- testing_df0[, colSums(is.na(testing_df0)) == 0]
+testing_df1 <- testing_df1[,-c(1:7)]
+
+
+dim(training_df1)
+```
+
+We have now reduced columns from 160 to 53.
+Next we check that the resulting data frame has no missing values, and all predictor variables are numeric or integer (except classe which is a factor), with:
+```{r}
+table(complete.cases(training_df1)) # result is TRUE
+table(complete.cases(testing_df1))
+
+table(sapply(training_df1[,], class)) # result is 1 factor and rest numeric/integer
+table(sapply(testing_df1[,], class)) # result is all integer/numeric 
+```
+
+### Split the data
+Create partitions of the data into training and validation data sets 70% to 30%
+
+```{r split_data} 
+inTrain <- createDataPartition(y=training_df1$classe, p=.7, list=FALSE)
+
+training <-   training_df1[inTrain,]
+validation <- training_df1[-inTrain,]
+```
+
+### Create Prediction models 
+We will use the caret package and fit three different classification models (since this is a classification problem) and then choose the best one
+The three models we will fit are: Random partitions, Boosting, and Random Forests
+
+```{r model_rpart}
+# Setup cv (cross-validation) parameters
+control <- trainControl(method = "cv",number=5)
+proc_start <- proc.time()
+# Random Partitions model
+set.seed(111)
+model_rpart <- train(classe ~ ., data=training,
+                  preProcess=c("center","scale"),method="rpart",trControl=control)
+proc_rpart <-proc.time() - proc_start
+proc_rpart
+```
+
+```{r model_gbm, warning=FALSE,message=FALSE}
+# Generalized Boosting model
+set.seed(112)
+proc_start <- proc.time()
+model_gbm <- train(classe ~ ., data=training,
+                  preProcess=c("center","scale"),method="gbm",trControl=control,verbose=FALSE)
+
+
+proc_gbm <- proc.time() - proc_start
+proc_gbm
+```
+```{r model_rf, warning=FALSE,message=FALSE}
+# Random Forests model
+set.seed(113)
+proc_start <- proc.time()
+model_rf <- train(classe ~ ., data=training,
+                  preProcess=c("center","scale"),method="rf",trControl=control)
+proc_rf <- proc.time() - proc_start
+proc_rf
+```
+
+#### Choose the best Model
+
+```{r choose_model}
+pred_rpart <- predict(model_rpart, newdata=validation)
+cm_rpart <- confusionMatrix(pred_rpart, validation$classe)
+
+pred_gbm <- predict(model_gbm, newdata=validation)
+cm_gbm <- confusionMatrix(pred_gbm, validation$classe)
+
+pred_rf <- predict(model_rf, newdata=validation)
+cm_rf <- confusionMatrix(pred_rf, validation$classe)
+
+accuracy_table <- data.frame(model_name = c('RPART', 'GBM', 'RF'),
+                  Accuracy = rbind(cm_rpart$overall[1], cm_gbm$overall[1], cm_rf$overall[1])
+                  )
+
+accuracy_table
+```
+
+* Random partitions (rpart) accuracy is less than 50% so it is worse than a coin toss
+* Boosting and Random Forest are much better at over 95% accuracy
+* **Random Forests is the best since it has the highest accuracy, so we choose rf**
+
+Now we print the random forests model along with its various statistics including confusion matrix, Out of sample error rate, residual plot, and Variable order of importance
+
+```{r print_rf}
+model_rf
+cm_rf
+```
+
+The accuracy rate of Random Forest is 0.994, and so the out-of-sample error rate is 0.006.
+
+Another benefit of random forest model is that it clearly provides a list of the most important variables for predicting the model. Let us see what these are:
+```{r varimp_rf}
+
+varImpPlot(model_rf$finalModel,type=2)
+```
+
+#### Prediction on Testing data
+
+We now use the random forests model we created to predict the outcome variable classe for the testing set and store in the "predictions" vector
+
+```{r predict_test_data}
+predictions <- predict(model_rf,newdata=testing_df1)
+## predict will automatically apply predict.train and hence center & scale testing_df1
+
+# now create a data frame of problem_id (from testing_df1) and our predicted value
+predicted_df <- data.frame(problem_id=testing_df1$problem_id, predicted_classe=predictions)
+
+predicted_df
+
+```
+
+#### Conclusion
+In conclusion, after reviewing the three machine learning algorithms listed above, Random Forest provided the greatest accuracy so this was the chosen model to predict the test data
